@@ -78,6 +78,7 @@ def main():
             segments, info = model.transcribe(
                 audio, language=None if language == "auto" else language,
                 beam_size=3, temperature=0.0, condition_on_previous_text=False,
+                initial_prompt=str(request.get("assistantName", "프라이데이"))[:20],
                 vad_filter=True, vad_parameters={"min_silence_duration_ms": 400},
             )
             text = " ".join(segment.text.strip() for segment in segments).strip()

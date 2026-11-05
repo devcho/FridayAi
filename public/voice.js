@@ -10,7 +10,7 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
   let capabilities = null, chatBusy = false, captureState = 'idle', captureEpoch = 0;
   let recording = null, transcription = null, playback = null, playbackEpoch = 0, currentAudio = null, currentReadButton = null;
   let speechContext = null, speechSource = null, continuousArmed = false, listenTimer = null, voiceActive = false, voiceReplyPending = false, autoListening = false, autoListenAttempted = false;
-  let awaitingRequest = false;
+  let awaitingRequest = false, speechWarmTimer = null, speechWarming = null;
   for (const [id, key] of [['#voice-auto-listen', 'fridayAutoListen'], ['#voice-auto-stop', 'fridayAutoStop'], ['#voice-continuous', 'fridayContinuous'], ['#voice-auto-send', 'fridayAutoSend'], ['#voice-auto-read', 'fridayAutoRead']]) {
     try { const saved = window.localStorage?.getItem(key); if (saved !== null && saved !== undefined) $(id).checked = saved === 'true'; } catch {}
     $(id).addEventListener('change', () => {
@@ -93,6 +93,17 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
 
   async function prepareSpeech() {
     if ($('#voice-engine').value !== 'neural') return;
+    if (speechWarming) return speechWarming;
+    speechWarming = warmSpeech().finally(() => { speechWarming = null; });
+    return speechWarming;
+  }
+  function keepSpeechWarm() {
+    clearInterval(speechWarmTimer);
+    speechWarmTimer = setInterval(() => {
+      if (voiceActive && $('#voice-auto-read').checked && $('#voice-engine').value === 'neural' && !playback) void prepareSpeech();
+    }, 60000);
+  }
+  async function warmSpeech() {
     try {
       await request('/api/voice/warm-speech', { json: { engine: 'neural' } });
       if (voiceActive && $('#voice-engine').value === 'neural' && !playback && !chatBusy && captureState === 'idle') status('자연스러운 한국어 목소리가 준비됐습니다.');
@@ -125,7 +136,7 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
     if (currentReadButton) { currentReadButton.textContent = '▷ 답변 듣기'; currentReadButton.setAttribute('aria-pressed', 'false'); currentReadButton = null; }
     update();
   }
-  function stopAll() { voiceActive = false; voiceReplyPending = false; autoListening = false; awaitingRequest = false; continuousArmed = false; clearTimeout(listenTimer); cancelInput(); stopSpeaking(); status(''); }
+  function stopAll() { clearInterval(speechWarmTimer); speechWarmTimer = null; voiceActive = false; voiceReplyPending = false; autoListening = false; awaitingRequest = false; continuousArmed = false; clearTimeout(listenTimer); cancelInput(); stopSpeaking(); status(''); }
 
   async function recognize(audio) {
     if (chatBusy || captureState === 'transcribing') return;
@@ -148,8 +159,8 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
       }
       const addressed = addressedText(result.text, { ...(capabilities?.assistant || {}), requireWakeWord: followingWake ? false : autoListening || Boolean(capabilities?.assistant?.requireWakeWord) });
       if (!addressed.addressed) {
-        if (autoListening) { status(`‘${capabilities?.assistant?.name || '프라이데이'}’ 호출을 기다리고 있습니다.`); listenNext(); return; }
-        continuousArmed = false; voiceActive = false; status(`‘${capabilities?.assistant?.name || '프라이데이'}’로 시작하지 않아 전송하지 않았습니다.`); return;
+        if (autoListening) { status(`인식: ${result.text.slice(0, 90)} · ‘${capabilities?.assistant?.name || '프라이데이'}’ 호출을 기다리고 있습니다.`); listenNext(); return; }
+        continuousArmed = false; voiceActive = false; status(`인식: ${result.text.slice(0, 90)} · ‘${capabilities?.assistant?.name || '프라이데이'}’로 시작하지 않아 전송하지 않았습니다.`); return;
       }
       if (!addressed.text) {
         awaitingRequest = true;
@@ -214,7 +225,7 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
       let recorder;
       try { recorder = new MediaRecorder(stream, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 64000 }); }
       catch (error) { stream.getTracks().forEach(track => track.stop()); throw error; }
-      const session = { stream, recorder, chunks: [], discard: false, started: Date.now(), bytes: 0, activity: createVoiceActivity() };
+      const session = { stream, recorder, chunks: [], discard: false, started: Date.now(), bytes: 0, activity: createVoiceActivity({ minSpeechLevel: autoListening ? 0.016 : 0.026 }) };
       recording = session;
       try {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -301,7 +312,7 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
     try {
       if (!capabilities) await refreshCapabilities();
       const engine = requestedEngine || $('#voice-engine').value || capabilities.speechEngine || 'windows';
-      const chunks = speechChunks(content, engine === 'neural' ? capabilities.speechChunkCharacters || 160 : 700);
+      const chunks = speechChunks(content, engine === 'neural' ? capabilities.speechChunkCharacters || 160 : 700, engine === 'neural' ? { firstSize: 48 } : {});
       const generate = text => request('/api/voice/speak', { json: { text, engine }, signal: controller.signal })
         .then(response => response.blob()).then(blob => ({ blob }), error => ({ error }));
       let next = chunks.length ? generate(chunks[0]) : null;
@@ -329,7 +340,7 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
     try {
       if (!capabilities) await refreshCapabilities();
       if (!capabilities.installed || !microphoneSupported) { stopAll(); return; }
-      void prepareSpeech(); await startRecording({ unlock: !automatic });
+      keepSpeechWarm(); void prepareSpeech(); await startRecording({ unlock: !automatic });
     } catch (error) { stopAll(); status(error.message); notify(error.message); }
     return true;
   }

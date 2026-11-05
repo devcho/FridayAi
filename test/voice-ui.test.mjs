@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createVoiceChat } from '../public/voice.js';
 
-function environment(t, { permission, natural = false, assistant, utterance = '안녕하세요', webAudio = false, autoListen = false, speechError = false } = {}) {
+function environment(t, { permission, natural = false, assistant, utterance = '안녕하세요', webAudio = false, autoListen = false, speechError = false, warmTimers } = {}) {
   class Element {
     constructor() { this.hidden = false; this.checked = true; this.value = 'ko'; this.textContent = ''; this.dataset = {}; this.listeners = {}; this.attributes = {}; this.files = []; this.children = []; }
     addEventListener(name, handler) { this.listeners[name] = handler; }
@@ -30,6 +30,14 @@ function environment(t, { permission, natural = false, assistant, utterance = '�
   }
   const saved = new Map();
   function replace(name, value) { saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name)); Object.defineProperty(globalThis, name, { configurable: true, writable: true, value }); }
+  if (warmTimers) {
+    const interval = globalThis.setInterval, clear = globalThis.clearInterval;
+    replace('setInterval', (callback, ms, ...args) => {
+      if (ms !== 60000) return interval(callback, ms, ...args);
+      const timer = { callback, cleared: false }; warmTimers.push(timer); return timer;
+    });
+    replace('clearInterval', timer => { if (warmTimers.includes(timer)) timer.cleared = true; else clear(timer); });
+  }
   const requests = [], transcripts = [], notices = []; let sends = 0;
   replace('document', { querySelector: element, createElement: () => new Element() });
   const audioLog = [];
@@ -193,6 +201,7 @@ test('voice conversation reads natural replies in bounded chunks through the sel
   await flush(); await flush();
   const requests = env.requests.filter(request => request.url.endsWith('/speak')).map(request => JSON.parse(request.options.body));
   assert.ok(requests.length > 1);
+  assert.ok(requests[0].text.length <= 48);
   assert.ok(requests.every(request => request.engine === 'neural' && request.text.length <= 160));
   assert.match(env.element('#voice-status').textContent, /읽기를 마쳤/);
   assert.equal(env.notices.length, 0);
@@ -280,4 +289,37 @@ test('turning off the composer microphone during permission request releases a l
   await env.element('#voice-toggle').click(); release(env.stream); await starting;
   assert.ok(env.track.stops > 0); assert.equal(env.recorders.length, 0);
   assert.equal(env.element('#voice-toggle').attributes['aria-pressed'], 'false');
+});
+
+test('natural model stays warm only during active voice replies and heartbeat is cleared at stop', async t => {
+  const warmTimers = [];
+  const env = environment(t, { natural: true, warmTimers });
+  await begin(env); await flush();
+  const warms = () => env.requests.filter(request => request.url.endsWith('/warm-speech')).length;
+  const before = warms();
+  assert.equal(warmTimers.length, 1);
+  warmTimers[0].callback(); await flush();
+  assert.equal(warms(), before + 1);
+  env.element('#voice-engine').value = 'windows';
+  warmTimers[0].callback(); await flush();
+  assert.equal(warms(), before + 1);
+  env.element('#voice-engine').value = 'neural';
+  env.element('#voice-auto-read').checked = false;
+  warmTimers[0].callback(); await flush();
+  assert.equal(warms(), before + 1);
+  env.voice.stopAll();
+  assert.equal(warmTimers[0].cleared, true);
+  warmTimers[0].callback(); await flush();
+  assert.equal(warms(), before + 1);
+});
+
+test('wake rejection shows recognized text and a known alias can submit normally', async t => {
+  const env = environment(t, { autoListen: true, utterance: ['후라이팬 꺼내줘', '후라이데이, 오늘 날씨 알려줘'] });
+  await env.voice.ready; await flush();
+  await finish(env);
+  assert.match(env.element('#voice-status').textContent, /후라이팬 꺼내줘/);
+  assert.equal(env.sends, 0);
+  await wait(150); await finish(env);
+  assert.equal(env.sends, 1);
+  assert.deepEqual(env.transcripts, ['오늘 날씨 알려줘']);
 });
