@@ -6,7 +6,7 @@ let busy = false, connected = false, currentDirectory = '.', startedAt = 0, elap
 const transcript = [];
 const toolCards = [];
 let voiceChat = null, assistant = { name: '프라이데이', requireWakeWord: true }, previewPath = null;
-const labels = { list_directory: '폴더 살펴보기', read_file: '파일 읽기', read_document: '문서 읽기', create_document: '문서 만들기', search_files: '코드 검색', write_file: '파일 저장', run_command: '명령 실행', system_info: '시스템 확인', open_path: '탐색기 열기' };
+const labels = { get_weather: '날씨 조회', list_directory: '폴더 살펴보기', read_file: '파일 읽기', read_document: '문서 읽기', create_document: '문서 만들기', search_files: '코드 검색', write_file: '파일 저장', run_command: '명령 실행', system_info: '시스템 확인', open_path: '탐색기 열기' };
 const documentExtension = /\.(docx|xlsx|pptx|hwpx|hwp)$/i;
 
 function element(tag, className, text) {
@@ -68,7 +68,7 @@ function addTool(event) {
   showConversation();
   const card = element('details', 'tool-card');
   const summary = element('summary');
-  summary.append(element('span', '', labels[event.name] || event.name), element('span', 'tool-path', event.arguments?.path || event.arguments?.query || ''));
+  summary.append(element('span', '', labels[event.name] || event.name), element('span', 'tool-path', event.arguments?.path || event.arguments?.query || event.arguments?.location || ''));
   const state = element('span', 'tool-state', '진행 중'); summary.append(state);
   const output = element('pre', '', '결과를 기다리고 있습니다.');
   card.append(summary, output); $('#messages').append(card);
