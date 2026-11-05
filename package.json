@@ -1,0 +1,20 @@
+{
+  "name": "local-pc-ai",
+  "version": "0.5.0",
+  "private": true,
+  "type": "module",
+  "description": "A local Korean coding and PC assistant powered by Ollama",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check server.mjs && node --check lib/workspace.mjs && node --check lib/agent.mjs && node --check lib/documents.mjs && node --check lib/voice.mjs && node --check lib/neural-speech.mjs && node --check public/app.js && node --check public/workspace-app.js && node --check public/voice.js && node --check public/wake-word.js && node --check public/speech-text.js && node --check public/voice-activity.js && node --check scripts/setup-voice.mjs && node --check scripts/setup-natural-voice.mjs && node --check scripts/setup-documents.mjs",
+    "setup:voice": "node scripts/setup-voice.mjs",
+    "setup:natural-voice": "node scripts/setup-natural-voice.mjs",
+    "compare:voices": "node scripts/compare-voices.mjs",
+    "setup:documents": "node scripts/setup-documents.mjs",
+    "verify:documents": "node scripts/verify-documents.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
