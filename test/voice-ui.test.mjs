@@ -113,15 +113,22 @@ test('automatic wake listener ignores unrelated speech and keeps waiting', async
   assert.match(env.element('#voice-status').textContent, /듣고|호출/);
 });
 
-test('a name-only wake accepts one following request without repeating the name, then requires a new wake', async t => {
-  const env = environment(t, { autoListen: true, assistant: { name: '프라이데이', requireWakeWord: true }, utterance: ['프라이데이', '오늘 할 일을 정리해 줘', '다른 사람과 하는 말'] });
+test('one wake opens a conversation until it ends, including across answer playback', async t => {
+  const env = environment(t, { autoListen: true, assistant: { name: '프라이데이', requireWakeWord: true }, utterance: ['프라이데이', '오늘 할 일을 정리해 줘', '두 번째 항목을 설명해 줘', '이름 없이 새 대화 시작'] });
   await env.voice.ready; await flush(); await finish(env); await wait(150);
   await finish(env);
   assert.equal(env.sends, 1);
   assert.deepEqual(env.transcripts, ['오늘 할 일을 정리해 줘']);
-  env.voice.maybeSpeak('오늘 할 일입니다.'); await flush(); await flush(); await wait(150);
-  await finish(env); await wait(150);
-  assert.equal(env.sends, 1);
+  env.voice.beforeSend(); env.voice.setBusy(true);
+  env.voice.maybeSpeak('오늘 할 일입니다.'); env.voice.setBusy(false);
+  await flush(); await flush(); await wait(150);
+  await finish(env);
+  assert.equal(env.sends, 2);
+  assert.deepEqual(env.transcripts, ['오늘 할 일을 정리해 줘', '두 번째 항목을 설명해 줘']);
+  await env.element('#voice-end').click();
+  assert.equal(env.element('#voice-toggle').attributes['aria-pressed'], 'false');
+  await begin(env); await finish(env);
+  assert.equal(env.sends, 2);
 });
 
 test('the microphone button also acknowledges a name-only call and accepts the following request', async t => {
@@ -133,15 +140,16 @@ test('the microphone button also acknowledges a name-only call and accepts the f
   assert.deepEqual(env.transcripts, ['안녕하세요']);
 });
 
-test('silence after a name-only call expires the permission to send a request without a wake word', async t => {
-  const env = environment(t, { webAudio: true, assistant: { name: '프라이데이', requireWakeWord: true }, utterance: ['프라이데이', '다른 사람과 하는 말'] });
+test('quiet recordings are discarded without closing an active conversation', async t => {
+  const env = environment(t, { webAudio: true, assistant: { name: '프라이데이', requireWakeWord: true }, utterance: ['프라이데이', '이어서 설명해 줘'] });
   await begin(env); await finish(env); await wait(150);
   let now = Date.now();
   t.mock.method(Date, 'now', () => now);
   await wait(150); now += 16000; await wait(300);
+  assert.equal(env.requests.filter(request => request.url.includes('/transcribe')).length, 1);
   await finish(env);
-  assert.equal(env.sends, 0);
-  assert.deepEqual(env.transcripts, []);
+  assert.equal(env.sends, 1);
+  assert.deepEqual(env.transcripts, ['이어서 설명해 줘']);
 });
 
 test('name-only acknowledgement uses the available fast voice while answers keep the selected natural voice', async t => {
@@ -245,11 +253,17 @@ test('rejected recognized speech preserves the reason instead of listening again
   assert.match(env.element('#voice-status').textContent, /전송하지/);
 });
 
-test('speech addressed to Friday inserts the actual request into the same composer', async t => {
-  const env = environment(t, { assistant: { name: '프라이데이', requireWakeWord: true }, utterance: '프라이데이, 한글 문서 만들어 줘' });
+test('a first request with the name also opens a conversation with automatic reading disabled', async t => {
+  const env = environment(t, { assistant: { name: '프라이데이', requireWakeWord: true }, utterance: ['프라이데이, 한글 문서 만들어 줘', '제목은 업무 보고서로 해 줘'] });
+  env.element('#voice-auto-read').checked = false;
   await begin(env); await finish(env);
   assert.equal(env.sends, 1); assert.deepEqual(env.transcripts, ['한글 문서 만들어 줘']);
   assert.equal(env.element('#prompt').value, '한글 문서 만들어 줘');
+  env.voice.beforeSend(); env.voice.setBusy(true);
+  env.voice.maybeSpeak('문서를 준비합니다.'); env.voice.setBusy(false);
+  await wait(150); await finish(env);
+  assert.equal(env.sends, 2);
+  assert.equal(env.element('#prompt').value, '제목은 업무 보고서로 해 줘');
 });
 
 test('finished recordings release the microphone and auto-send once', async t => {
