@@ -6,6 +6,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
 import { createApp } from '../server.mjs';
+import { buildSystemPrompt, runAgent } from '../lib/agent.mjs';
+
+test('a name question uses the current setting even after a different name appeared in chat', async () => {
+  const session = { assistant: { name: '자비스' }, history: [{ role: 'assistant', content: '저는 프라이어데이입니다.' }] };
+  const events = [];
+  await runAgent({ session, prompt: '자비스, 네 이름이 뭐야?', signal: new AbortController().signal,
+    emit: event => events.push(event), modelCall: () => assert.fail('Name questions use the setting directly'),
+  });
+  assert.equal(events.at(-1).content, '제 이름은 자비스입니다.');
+  const prompt = buildSystemPrompt('.', 'chat', session.assistant);
+  assert.match(prompt, /current configured name is "자비스"/);
+  assert.doesNotMatch(prompt, /Friday|프라이데이/);
+});
 
 test('HTTP app requires local authentication and waits for write approval', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'local-mate-http-'));
