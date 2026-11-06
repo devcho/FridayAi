@@ -28,6 +28,6 @@ try {
   await run(python, ['-c', 'import sys; from huggingface_hub import snapshot_download; print(snapshot_download("Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",local_dir=sys.argv[1],cache_dir=sys.argv[2],allow_patterns=["*.json","*.txt","*.safetensors"],token=False))', path.join(home, 'models', 'qwen3-tts-small'), path.join(home, 'tts-hf-cache')], {
     ...process.env, HF_HOME: path.join(home, 'tts-hf-cache'), HF_HUB_DISABLE_TELEMETRY: '1', HF_HUB_DISABLE_XET: '1', PYTHONUTF8: '1',
   });
-  await fs.writeFile(marker, JSON.stringify({ engine: 'qwen3-tts', voice: 'Sohee', device: 'cuda', installedAt: new Date().toISOString() }, null, 2), 'utf8');
+  await fs.writeFile(marker, JSON.stringify({ engine: 'qwen3-tts', voice: 'Ryan', device: 'cuda', installedAt: new Date().toISOString() }, null, 2), 'utf8');
   console.log('자연 음성 설치 완료. 앱을 다시 실행하면 자연스러운 목소리를 선택할 수 있습니다.');
 } catch (error) { console.error(`자연 음성 설치 실패: ${error.message}`); process.exitCode = 1; }

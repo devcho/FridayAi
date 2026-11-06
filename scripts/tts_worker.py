@@ -8,6 +8,8 @@ import os
 import sys
 import time
 
+SPEAKER = "Ryan"
+
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
@@ -37,7 +39,7 @@ def main():
             args.model, device_map="cuda:0", dtype=torch.bfloat16,
             attn_implementation="sdpa", local_files_only=True,
         )
-    emit({"event": "ready", "device": "cuda", "voice": "Sohee", "loadSeconds": round(time.perf_counter() - started, 3)})
+    emit({"event": "ready", "device": "cuda", "voice": SPEAKER, "loadSeconds": round(time.perf_counter() - started, 3)})
     for line in sys.stdin:
         request = {}
         try:
@@ -50,7 +52,7 @@ def main():
             with contextlib.redirect_stdout(sys.stderr), torch.inference_mode():
                 waves, sample_rate = model.generate_custom_voice(
                     text=text, language="Korean" if korean else "English",
-                    speaker="Sohee" if korean else "Ryan",
+                    speaker=SPEAKER,
                     non_streaming_mode=True, do_sample=False, max_new_tokens=768,
                 )
                 torch.cuda.synchronize()
