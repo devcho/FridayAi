@@ -17,13 +17,16 @@ test('known Friday recognition variants preserve the following request', () => {
 test('natural speech starts with a short sentence and retains all remaining content', () => {
   const text = '첫 문장입니다. ' + '자연스러운 음성으로 긴 답변을 읽습니다. 😀 '.repeat(20);
   const chunks = speechChunks(text, 160, { firstSize: 48 });
-  assert.equal(chunks[0], '첫 문장입니다. 자연스러운 음성으로 긴 답변을 읽습니다.');
+  assert.equal(chunks[0], '첫 문장입니다.');
   assert.ok(chunks[0].length <= 48);
   assert.ok(chunks.every(chunk => chunk.length <= 160));
   assert.equal(chunks.join('').replace(/\s/g, ''), speechText(text).replace(/\s/g, ''));
   const unbroken = speechChunks('가'.repeat(47) + '😀' + '나'.repeat(200), 160, { firstSize: 48 });
   assert.equal(unbroken.join(''), '가'.repeat(47) + '😀' + '나'.repeat(200));
   assert.ok(!/[\uD800-\uDBFF]$/.test(unbroken[0]));
+  const greeting = '안녕하세요. 오늘은 어떤 작업을 함께 해 볼까요?';
+  assert.deepEqual(speechChunks(greeting, 160, { firstSize: 48 }), ['안녕하세요.', '오늘은 어떤 작업을 함께 해 볼까요?']);
+  assert.deepEqual(speechChunks(greeting), [greeting]);
 });
 
 test('sensitive wake detection catches a quiet short call and discards low steady noise', () => {
