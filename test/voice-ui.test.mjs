@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createVoiceChat } from '../public/voice.js';
 
-function environment(t, { permission, natural = false, assistant, utterance = '안녕하세요', webAudio = false, autoListen = false, speechError = false } = {}) {
+function environment(t, { permission, natural = false, assistant, utterance = '안녕하세요', webAudio = false, autoListen = false, speechError = false, warmTimers } = {}) {
   class Element {
     constructor() { this.hidden = false; this.checked = true; this.value = 'ko'; this.textContent = ''; this.dataset = {}; this.listeners = {}; this.attributes = {}; this.files = []; this.children = []; }
     addEventListener(name, handler) { this.listeners[name] = handler; }
@@ -30,6 +30,14 @@ function environment(t, { permission, natural = false, assistant, utterance = '�
   }
   const saved = new Map();
   function replace(name, value) { saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name)); Object.defineProperty(globalThis, name, { configurable: true, writable: true, value }); }
+  if (warmTimers) {
+    const interval = globalThis.setInterval, clear = globalThis.clearInterval;
+    replace('setInterval', (callback, ms, ...args) => {
+      if (ms !== 60000) return interval(callback, ms, ...args);
+      const timer = { callback, cleared: false }; warmTimers.push(timer); return timer;
+    });
+    replace('clearInterval', timer => { if (warmTimers.includes(timer)) timer.cleared = true; else clear(timer); });
+  }
   const requests = [], transcripts = [], notices = []; let sends = 0;
   replace('document', { querySelector: element, createElement: () => new Element() });
   const audioLog = [];
@@ -105,15 +113,22 @@ test('automatic wake listener ignores unrelated speech and keeps waiting', async
   assert.match(env.element('#voice-status').textContent, /듣고|호출/);
 });
 
-test('a name-only wake accepts one following request without repeating the name, then requires a new wake', async t => {
-  const env = environment(t, { autoListen: true, assistant: { name: '프라이데이', requireWakeWord: true }, utterance: ['프라이데이', '오늘 할 일을 정리해 줘', '다른 사람과 하는 말'] });
+test('one wake opens a conversation until it ends, including across answer playback', async t => {
+  const env = environment(t, { autoListen: true, assistant: { name: '프라이데이', requireWakeWord: true }, utterance: ['프라이데이', '오늘 할 일을 정리해 줘', '두 번째 항목을 설명해 줘', '이름 없이 새 대화 시작'] });
   await env.voice.ready; await flush(); await finish(env); await wait(150);
   await finish(env);
   assert.equal(env.sends, 1);
   assert.deepEqual(env.transcripts, ['오늘 할 일을 정리해 줘']);
-  env.voice.maybeSpeak('오늘 할 일입니다.'); await flush(); await flush(); await wait(150);
-  await finish(env); await wait(150);
-  assert.equal(env.sends, 1);
+  env.voice.beforeSend(); env.voice.setBusy(true);
+  env.voice.maybeSpeak('오늘 할 일입니다.'); env.voice.setBusy(false);
+  await flush(); await flush(); await wait(150);
+  await finish(env);
+  assert.equal(env.sends, 2);
+  assert.deepEqual(env.transcripts, ['오늘 할 일을 정리해 줘', '두 번째 항목을 설명해 줘']);
+  await env.element('#voice-end').click();
+  assert.equal(env.element('#voice-toggle').attributes['aria-pressed'], 'false');
+  await begin(env); await finish(env);
+  assert.equal(env.sends, 2);
 });
 
 test('the microphone button also acknowledges a name-only call and accepts the following request', async t => {
@@ -125,15 +140,16 @@ test('the microphone button also acknowledges a name-only call and accepts the f
   assert.deepEqual(env.transcripts, ['안녕하세요']);
 });
 
-test('silence after a name-only call expires the permission to send a request without a wake word', async t => {
-  const env = environment(t, { webAudio: true, assistant: { name: '프라이데이', requireWakeWord: true }, utterance: ['프라이데이', '다른 사람과 하는 말'] });
+test('quiet recordings are discarded without closing an active conversation', async t => {
+  const env = environment(t, { webAudio: true, assistant: { name: '프라이데이', requireWakeWord: true }, utterance: ['프라이데이', '이어서 설명해 줘'] });
   await begin(env); await finish(env); await wait(150);
   let now = Date.now();
   t.mock.method(Date, 'now', () => now);
   await wait(150); now += 16000; await wait(300);
+  assert.equal(env.requests.filter(request => request.url.includes('/transcribe')).length, 1);
   await finish(env);
-  assert.equal(env.sends, 0);
-  assert.deepEqual(env.transcripts, []);
+  assert.equal(env.sends, 1);
+  assert.deepEqual(env.transcripts, ['이어서 설명해 줘']);
 });
 
 test('name-only acknowledgement uses the available fast voice while answers keep the selected natural voice', async t => {
@@ -193,6 +209,7 @@ test('voice conversation reads natural replies in bounded chunks through the sel
   await flush(); await flush();
   const requests = env.requests.filter(request => request.url.endsWith('/speak')).map(request => JSON.parse(request.options.body));
   assert.ok(requests.length > 1);
+  assert.ok(requests[0].text.length <= 48);
   assert.ok(requests.every(request => request.engine === 'neural' && request.text.length <= 160));
   assert.match(env.element('#voice-status').textContent, /읽기를 마쳤/);
   assert.equal(env.notices.length, 0);
@@ -236,11 +253,17 @@ test('rejected recognized speech preserves the reason instead of listening again
   assert.match(env.element('#voice-status').textContent, /전송하지/);
 });
 
-test('speech addressed to Friday inserts the actual request into the same composer', async t => {
-  const env = environment(t, { assistant: { name: '프라이데이', requireWakeWord: true }, utterance: '프라이데이, 한글 문서 만들어 줘' });
+test('a first request with the name also opens a conversation with automatic reading disabled', async t => {
+  const env = environment(t, { assistant: { name: '프라이데이', requireWakeWord: true }, utterance: ['프라이데이, 한글 문서 만들어 줘', '제목은 업무 보고서로 해 줘'] });
+  env.element('#voice-auto-read').checked = false;
   await begin(env); await finish(env);
   assert.equal(env.sends, 1); assert.deepEqual(env.transcripts, ['한글 문서 만들어 줘']);
   assert.equal(env.element('#prompt').value, '한글 문서 만들어 줘');
+  env.voice.beforeSend(); env.voice.setBusy(true);
+  env.voice.maybeSpeak('문서를 준비합니다.'); env.voice.setBusy(false);
+  await wait(150); await finish(env);
+  assert.equal(env.sends, 2);
+  assert.equal(env.element('#prompt').value, '제목은 업무 보고서로 해 줘');
 });
 
 test('finished recordings release the microphone and auto-send once', async t => {
@@ -280,4 +303,37 @@ test('turning off the composer microphone during permission request releases a l
   await env.element('#voice-toggle').click(); release(env.stream); await starting;
   assert.ok(env.track.stops > 0); assert.equal(env.recorders.length, 0);
   assert.equal(env.element('#voice-toggle').attributes['aria-pressed'], 'false');
+});
+
+test('natural model stays warm only during active voice replies and heartbeat is cleared at stop', async t => {
+  const warmTimers = [];
+  const env = environment(t, { natural: true, warmTimers });
+  await begin(env); await flush();
+  const warms = () => env.requests.filter(request => request.url.endsWith('/warm-speech')).length;
+  const before = warms();
+  assert.equal(warmTimers.length, 1);
+  warmTimers[0].callback(); await flush();
+  assert.equal(warms(), before + 1);
+  env.element('#voice-engine').value = 'windows';
+  warmTimers[0].callback(); await flush();
+  assert.equal(warms(), before + 1);
+  env.element('#voice-engine').value = 'neural';
+  env.element('#voice-auto-read').checked = false;
+  warmTimers[0].callback(); await flush();
+  assert.equal(warms(), before + 1);
+  env.voice.stopAll();
+  assert.equal(warmTimers[0].cleared, true);
+  warmTimers[0].callback(); await flush();
+  assert.equal(warms(), before + 1);
+});
+
+test('wake rejection shows recognized text and a known alias can submit normally', async t => {
+  const env = environment(t, { autoListen: true, utterance: ['후라이팬 꺼내줘', '후라이데이, 오늘 날씨 알려줘'] });
+  await env.voice.ready; await flush();
+  await finish(env);
+  assert.match(env.element('#voice-status').textContent, /후라이팬 꺼내줘/);
+  assert.equal(env.sends, 0);
+  await wait(150); await finish(env);
+  assert.equal(env.sends, 1);
+  assert.deepEqual(env.transcripts, ['오늘 날씨 알려줘']);
 });

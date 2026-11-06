@@ -10,12 +10,12 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
   let capabilities = null, chatBusy = false, captureState = 'idle', captureEpoch = 0;
   let recording = null, transcription = null, playback = null, playbackEpoch = 0, currentAudio = null, currentReadButton = null;
   let speechContext = null, speechSource = null, continuousArmed = false, listenTimer = null, voiceActive = false, voiceReplyPending = false, autoListening = false, autoListenAttempted = false;
-  let awaitingRequest = false;
+  let wakeAccepted = false, speechWarmTimer = null, speechWarming = null;
   for (const [id, key] of [['#voice-auto-listen', 'fridayAutoListen'], ['#voice-auto-stop', 'fridayAutoStop'], ['#voice-continuous', 'fridayContinuous'], ['#voice-auto-send', 'fridayAutoSend'], ['#voice-auto-read', 'fridayAutoRead']]) {
     try { const saved = window.localStorage?.getItem(key); if (saved !== null && saved !== undefined) $(id).checked = saved === 'true'; } catch {}
     $(id).addEventListener('change', () => {
       try { window.localStorage?.setItem(key, String($(id).checked)); } catch {}
-      if (id === '#voice-continuous' && !$(id).checked) { continuousArmed = false; clearTimeout(listenTimer); update(); }
+      if (id === '#voice-continuous' && !$(id).checked) { continuousArmed = false; wakeAccepted = false; clearTimeout(listenTimer); update(); }
       if (id === '#voice-auto-listen') {
         autoListenAttempted = false;
         if ($(id).checked) maybeAutoListen();
@@ -74,7 +74,7 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
   }
   async function refreshCapabilities() {
     capabilities = await (await request('/api/voice/status')).json();
-    if (capabilities.assistant) $('#voice-wake-hint').textContent = capabilities.assistant.requireWakeWord ? `‘${capabilities.assistant.name}’로 시작한 말에만 응답합니다. 예: ${capabilities.assistant.name}, 보고서 만들어 줘.` : '이름을 부르지 않아도 말한 내용을 전달합니다.';
+    if (capabilities.assistant) $('#voice-wake-hint').textContent = capabilities.assistant.requireWakeWord ? `처음에 ‘${capabilities.assistant.name}’를 부르면 음성 대화를 종료할 때까지 이름을 생략할 수 있습니다.` : '이름을 부르지 않아도 말한 내용을 전달합니다.';
     const engines = capabilities.speechEngines || [{ id: 'windows', name: '기본 음성 · 빠름', available: capabilities.canSpeak }];
     let preferred;
     try { preferred = window.localStorage?.getItem('localMateSpeechEngine'); } catch {}
@@ -93,6 +93,17 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
 
   async function prepareSpeech() {
     if ($('#voice-engine').value !== 'neural') return;
+    if (speechWarming) return speechWarming;
+    speechWarming = warmSpeech().finally(() => { speechWarming = null; });
+    return speechWarming;
+  }
+  function keepSpeechWarm() {
+    clearInterval(speechWarmTimer);
+    speechWarmTimer = setInterval(() => {
+      if (voiceActive && $('#voice-auto-read').checked && $('#voice-engine').value === 'neural' && !playback) void prepareSpeech();
+    }, 60000);
+  }
+  async function warmSpeech() {
     try {
       await request('/api/voice/warm-speech', { json: { engine: 'neural' } });
       if (voiceActive && $('#voice-engine').value === 'neural' && !playback && !chatBusy && captureState === 'idle') status('자연스러운 한국어 목소리가 준비됐습니다.');
@@ -125,7 +136,7 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
     if (currentReadButton) { currentReadButton.textContent = '▷ 답변 듣기'; currentReadButton.setAttribute('aria-pressed', 'false'); currentReadButton = null; }
     update();
   }
-  function stopAll() { voiceActive = false; voiceReplyPending = false; autoListening = false; awaitingRequest = false; continuousArmed = false; clearTimeout(listenTimer); cancelInput(); stopSpeaking(); status(''); }
+  function stopAll() { clearInterval(speechWarmTimer); speechWarmTimer = null; voiceActive = false; voiceReplyPending = false; autoListening = false; wakeAccepted = false; continuousArmed = false; clearTimeout(listenTimer); cancelInput(); stopSpeaking(); status(''); }
 
   async function recognize(audio) {
     if (chatBusy || captureState === 'transcribing') return;
@@ -140,19 +151,19 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
       const result = await response.json();
       if (epoch !== captureEpoch) return;
       captureState = 'idle'; transcription = null; update();
-      const followingWake = awaitingRequest;
-      awaitingRequest = false;
+      const inConversation = voiceActive && continuousArmed && wakeAccepted;
       if (!result.text?.trim()) {
+        if (inConversation) { status('말소리를 기다리고 있습니다. 종료 버튼으로 대화를 마칠 수 있습니다.'); listenNext(); return; }
         if (autoListening) { status(`‘${capabilities?.assistant?.name || '프라이데이'}’ 호출을 기다리고 있습니다.`); listenNext(); return; }
         continuousArmed = false; voiceActive = false; status('말소리를 찾지 못했습니다. 마이크를 가까이 두고 다시 말씀해 주세요.'); return;
       }
-      const addressed = addressedText(result.text, { ...(capabilities?.assistant || {}), requireWakeWord: followingWake ? false : autoListening || Boolean(capabilities?.assistant?.requireWakeWord) });
+      const addressed = addressedText(result.text, { ...(capabilities?.assistant || {}), requireWakeWord: !inConversation && (autoListening || Boolean(capabilities?.assistant?.requireWakeWord)) });
       if (!addressed.addressed) {
-        if (autoListening) { status(`‘${capabilities?.assistant?.name || '프라이데이'}’ 호출을 기다리고 있습니다.`); listenNext(); return; }
-        continuousArmed = false; voiceActive = false; status(`‘${capabilities?.assistant?.name || '프라이데이'}’로 시작하지 않아 전송하지 않았습니다.`); return;
+        if (autoListening) { status(`인식: ${result.text.slice(0, 90)} · ‘${capabilities?.assistant?.name || '프라이데이'}’ 호출을 기다리고 있습니다.`); listenNext(); return; }
+        continuousArmed = false; voiceActive = false; status(`인식: ${result.text.slice(0, 90)} · ‘${capabilities?.assistant?.name || '프라이데이'}’로 시작하지 않아 전송하지 않았습니다.`); return;
       }
+      wakeAccepted = voiceActive && continuousArmed;
       if (!addressed.text) {
-        awaitingRequest = true;
         const fastEngine = capabilities?.speechEngines?.some(engine => engine.id === 'windows' && engine.available) ? 'windows' : undefined;
         if ($('#voice-auto-read').checked && capabilities?.canSpeak) { void speak('네, 말씀하세요.', null, { engine: fastEngine }); return; }
         status('네, 말씀하세요.'); listenNext(); return;
@@ -214,7 +225,7 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
       let recorder;
       try { recorder = new MediaRecorder(stream, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 64000 }); }
       catch (error) { stream.getTracks().forEach(track => track.stop()); throw error; }
-      const session = { stream, recorder, chunks: [], discard: false, started: Date.now(), bytes: 0, activity: createVoiceActivity() };
+      const session = { stream, recorder, chunks: [], discard: false, started: Date.now(), bytes: 0, activity: createVoiceActivity({ minSpeechLevel: autoListening ? 0.016 : 0.026 }) };
       recording = session;
       try {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -236,7 +247,7 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
         if (epoch !== captureEpoch) return;
         captureState = 'idle'; update();
         if (!session.discard) void recognize(new Blob(session.chunks, { type: recorder.mimeType || 'audio/webm' }));
-        else { awaitingRequest = false; status('말소리를 기다리고 있습니다. 마이크 버튼으로 종료할 수 있습니다.'); listenNext(); }
+        else { status('말소리를 기다리고 있습니다. 마이크 버튼으로 종료할 수 있습니다.'); listenNext(); }
       };
       recorder.start(100); captureState = 'recording'; status($('#voice-auto-stop').checked && session.analyser ? '듣고 있어요 · 1초 조용하면 바로 전송' : '듣고 있어요 · 입력창의 음성 전송을 눌러 주세요'); update();
       session.timer = setInterval(() => {
@@ -301,7 +312,7 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
     try {
       if (!capabilities) await refreshCapabilities();
       const engine = requestedEngine || $('#voice-engine').value || capabilities.speechEngine || 'windows';
-      const chunks = speechChunks(content, engine === 'neural' ? capabilities.speechChunkCharacters || 160 : 700);
+      const chunks = speechChunks(content, engine === 'neural' ? capabilities.speechChunkCharacters || 160 : 700, engine === 'neural' ? { firstSize: 48 } : {});
       const generate = text => request('/api/voice/speak', { json: { text, engine }, signal: controller.signal })
         .then(response => response.blob()).then(blob => ({ blob }), error => ({ error }));
       let next = chunks.length ? generate(chunks[0]) : null;
@@ -323,13 +334,13 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
 
   async function startVoiceSession({ automatic = false } = {}) {
     if (voiceActive || captureState !== 'idle') return false;
-    awaitingRequest = false;
+    wakeAccepted = false;
     voiceActive = true; autoListening = automatic; armContinuous(); update();
     if (!automatic) void unlockSpeech().catch(error => { status(error.message); notify(error.message); });
     try {
       if (!capabilities) await refreshCapabilities();
       if (!capabilities.installed || !microphoneSupported) { stopAll(); return; }
-      void prepareSpeech(); await startRecording({ unlock: !automatic });
+      keepSpeechWarm(); void prepareSpeech(); await startRecording({ unlock: !automatic });
     } catch (error) { stopAll(); status(error.message); notify(error.message); }
     return true;
   }
@@ -364,7 +375,7 @@ export function createVoiceChat({ token, notify, onTranscript, onSend }) {
 
   return {
     setBusy(value) { chatBusy = value; update(); if (!value) { listenNext(); maybeAutoListen(); } },
-    beforeSend() { awaitingRequest = false; clearTimeout(listenTimer); cancelInput(); stopSpeaking(); },
+    beforeSend() { clearTimeout(listenTimer); cancelInput(); stopSpeaking(); },
     stopAll,
     refresh: refreshCapabilities,
     ready,

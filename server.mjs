@@ -129,7 +129,7 @@ export async function createApp({ projectRoot = path.dirname(fileURLToPath(impor
         }
         if (req.method === 'POST' && url.pathname === '/api/voice/transcribe') {
           const audio = await audioBody(req);
-          const result = await voiceRequest(res, signal => voice.transcribe(audio, { signal, language: url.searchParams.get('language') || 'ko' }));
+          const result = await voiceRequest(res, signal => voice.transcribe(audio, { signal, language: url.searchParams.get('language') || 'ko', assistantName: session.assistant.name }));
           return json(res, 200, result);
         }
         if (req.method === 'POST' && url.pathname === '/api/voice/speak') {
